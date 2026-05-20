@@ -1,0 +1,56 @@
+name: Fast Feedback CI
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest       # Виртуальная машина
+    steps:
+      - uses: actions/checkout@v4  # Клонирование кода
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install linters
+        run: pip install flake8 black
+
+      - name: Run flake8
+        run: flake8 . --max-line-length=88
+
+      - name: Check formatting with black
+        run: black --check .
+
+  test:
+    needs: lint                  # Запустится только после успешного lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install pytest   # и другие зависимости вашего проекта, если есть
+
+      - name: Run unit tests
+        run: pytest tests/        # предполагается, что тесты лежат в папке tests/
+
+  security:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Run security scan
+        run: bandit -r src/ -ll   # сканирует папку src/ с низким порогом серьёзности
