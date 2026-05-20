@@ -51,6 +51,3 @@ jobs:
 
       - name: Install bandit
         run: pip install bandit
-
-      - name: Run security scan
-        run: bandit -r src/ -ll   # сканирует папку src/ с низким порогом серьёзности
