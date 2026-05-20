@@ -33,8 +33,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
-        run: pip install pytest   # и другие зависимости вашего проекта, если есть
 
 
   security:
@@ -47,5 +45,3 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install bandit
-        run: pip install bandit
