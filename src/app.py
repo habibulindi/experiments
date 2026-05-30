@@ -1,8 +1,8 @@
-# src/app.py
 from flask import Flask
+from src.routes.main import register_routes   # импорт наверху
 
 app = Flask(__name__)
+register_routes(app)  # вызов после создания app
 
-# Импортируем наверх
-from src.routes.main import register_routes
-register_routes(app)
+if __name__ == "__main__":
+    app.run(debug=False)
