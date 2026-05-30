@@ -1,0 +1,12 @@
+# Monitoring data
+artifacts/monitoring/prometheus_data/
+artifacts/monitoring/grafana_data/
+artifacts/monitoring/loki_data/
+artifacts/monitoring/alertmanager_data/
+
+# State files
+*.tfstate
+*.tfstate.*
+
+# Local config (не коммитьте пароли!)
+artifacts/monitoring/alertmanager/alertmanager.local.yml
