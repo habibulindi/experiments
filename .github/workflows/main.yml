@@ -1,4 +1,5 @@
-name: CI (Before Optimization)
+name: Fast Feedback CI
+#name: Optimized CI/CD Pipeline
 
 on:
   push:
@@ -11,7 +12,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # ==================== 1. LINT & CACHE (МЕДЛЕННО) ====================
+  # --- Lint & Cache ---
   lint-and-cache:
     runs-on: ubuntu-latest
     steps:
@@ -22,21 +23,27 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ❌ УБРАЛИ КЭШИРОВАНИЕ – каждый раз качает пакеты заново
-      - name: Install dependencies (no cache)
-        run: pip install -r requirements.txt
+      - name: Cache pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      # ⏳ Искусственная задержка 3 минуты (эмулирует долгую установку)
-      - name: Simulate heavy dependency install
-        run: sleep 180
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Lint with flake8
         run: flake8 src/
 
-  # ==================== 2. TESTS (ПОСЛЕДОВАТЕЛЬНО, БЕЗ ПАРАЛЛЕЛИЗАЦИИ) ====================
+  # --- Tests (parallel) ---
   test:
     needs: lint-and-cache
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        suite: [unit, integration, e2e]
     steps:
       - uses: actions/checkout@v4
 
@@ -45,25 +52,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ❌ Снова установка без кэша
-      - name: Install dependencies (no cache)
+      - name: Cache pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 🔄 Все тесты выполняются последовательно в одной джобе
-      - name: Run unit tests
-        run: pytest tests/unit/ --timeout=300 || true
+      - name: Run ${{ matrix.suite }} tests
+        run: pytest tests/${{ matrix.suite }}/
 
-      - name: Run integration tests (with delay)
-        run: |
-          sleep 60  # имитация долгих интеграционных тестов
-          pytest tests/integration/ || true
-
-      - name: Run e2e tests (with heavy setup)
-        run: |
-          sleep 90  # имитация запуска окружения
-          pytest tests/e2e/ || true
-
-  # ==================== 3. SECURITY (ДОБАВЛЕНА ЗАДЕРЖКА) ====================
+  # --- Security ---
   security-sast:
     needs: lint-and-cache
     runs-on: ubuntu-latest
@@ -74,9 +77,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install bandit
-      # ⏳ Задержка перед сканированием
-      - name: Wait before scan
-        run: sleep 30
       - name: Bandit scan
         run: bandit -r src/ -ll -f json -o bandit-report.json
       - uses: actions/upload-artifact@v4
@@ -95,37 +95,37 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install pip-audit
-      - name: Check dependencies (with delay)
-        run: |
-          sleep 20
-          pip-audit --requirement requirements.txt --strict
+      - name: Check dependencies
+        run: pip-audit --requirement requirements.txt --strict
 
   security-gate:
-    needs: [security-sast, security-sca]
-    runs-on: ubuntu-latest
-    if: always() && !cancelled()
-    steps:
-      - name: Gate
-        run: |
-          SAST_RESULT="${{ needs.security-sast.result }}"
-          SCA_RESULT="${{ needs.security-sca.result }}"
-          if [ "$SAST_RESULT" = "skipped" ] || [ "$SCA_RESULT" = "skipped" ]; then
-            echo "Security checks were skipped, failing gate"
-            exit 1
-          elif [ "$SAST_RESULT" != "success" ] || [ "$SCA_RESULT" != "success" ]; then
-            echo "Security checks failed"
-            exit 1
-          fi
-          echo "All security checks passed"
+      needs: [security-sast, security-sca]
+      runs-on: ubuntu-latest
+      if: always() && !cancelled()
+      steps:
+        - name: Gate
+          run: |
+            SAST_RESULT="${{ needs.security-sast.result }}"
+            SCA_RESULT="${{ needs.security-sca.result }}"
+            if [ "$SAST_RESULT" = "skipped" ] || [ "$SCA_RESULT" = "skipped" ]; then
+              echo "Security checks were skipped, failing gate"
+              exit 1
+            elif [ "$SAST_RESULT" != "success" ] || [ "$SCA_RESULT" != "success" ]; then
+              echo "Security checks failed"
+              exit 1
+            fi
+            echo "All security checks passed"
 
-  # ==================== 4. DOCKER BUILD (БЕЗ КЭША BUILDKIT, С ЗАДЕРЖКОЙ) ====================
+  # --- Docker build & push ---
   build-and-push:
     needs: [test, security-gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # ❌ Не используем Buildx с кэшем – стандартный медленный docker build
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to registry
         uses: docker/login-action@v3
         with:
@@ -133,9 +133,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.BOT }}
 
-      # ⏳ Эмуляция долгой сборки образа
-      - name: Build image (slow, no cache)
-        run: |
-          sleep 60
-          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
+          cache-to: type=inline,mode=max
