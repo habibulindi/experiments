@@ -99,17 +99,22 @@ jobs:
         run: pip-audit --requirement requirements.txt --strict
 
   security-gate:
-    needs: [security-sast, security-sca]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Gate
-        run: |
-          if [ "${{ needs.security-sast.result }}" != "success" ] || [ "${{ needs.security-sca.result }}" != "success" ]; then
-            echo "Security checks failed"
-            exit 1
-          fi
-          echo "All security checks passed"
+      needs: [security-sast, security-sca]
+      runs-on: ubuntu-latest
+      if: always() && !cancelled()
+      steps:
+        - name: Gate
+          run: |
+            SAST_RESULT="${{ needs.security-sast.result }}"
+            SCA_RESULT="${{ needs.security-sca.result }}"
+            if [ "$SAST_RESULT" = "skipped" ] || [ "$SCA_RESULT" = "skipped" ]; then
+              echo "Security checks were skipped, failing gate"
+              exit 1
+            elif [ "$SAST_RESULT" != "success" ] || [ "$SCA_RESULT" != "success" ]; then
+              echo "Security checks failed"
+              exit 1
+            fi
+            echo "All security checks passed"
 
   # --- Docker build & push ---
   build-and-push:
