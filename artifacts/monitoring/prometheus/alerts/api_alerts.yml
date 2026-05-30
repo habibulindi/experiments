@@ -1,0 +1,57 @@
+groups:
+  - name: api_alerts
+    interval: 30s
+    rules:
+      # 🔴 Алерт 1: Высокий уровень ошибок
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "🔥 Высокий уровень ошибок API"
+          description: "Уровень 5xx ошибок: {{ $value | printf \"%.2f\" }}% (порог: 5%)"
+          runbook_url: "https://wiki.example.com/runbooks/high-error-rate"
+
+      # 🟡 Алерт 2: Высокая задержка
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, 
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "🐌 Высокая задержка API"
+          description: "p95 latency: {{ $value | printf \"%.2f\" }}s (порог: 500мс)"
+
+      # 🔴 Алерт 3: Сервис недоступен
+      - alert: ServiceDown
+        expr: up{job="api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "💥 Сервис API недоступен"
+          description: "Prometheus не получает метрики от API более 1 минуты"
+
+      # 🟡 Алерт 4: Высокое использование CPU
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "💻 Высокое использование CPU"
+          description: "CPU usage: {{ $value | printf \"%.1f\" }}%"
