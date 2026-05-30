@@ -1,59 +1,138 @@
 name: Fast Feedback CI
+#name: Optimized CI/CD Pipeline
 
 on:
+  push:
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
-  lint:
-    runs-on: ubuntu-latest       # Виртуальная машина
-    steps:
-      - uses: actions/checkout@v4  # Клонирование кода
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install linters
-        run: pip install flake8 black
-
-      - name: Run flake8
-        run: flake8 . --max-line-length=88
-
-      - name: Check formatting with black
-        run: black --check .
-
-      - name: Debug dir
-        run: ls -la
-
-  test:
-    needs: lint                  # Запустится только после успешного lint
+  # --- Lint & Cache ---
+  lint-and-cache:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install pytest   # и другие зависимости вашего проекта, если есть
+        run: pip install -r requirements.txt
 
-      - name: Run unit tests
-        run: pytest tests/        # предполагается, что тесты лежат в папке tests/
+      - name: Lint with flake8
+        run: flake8 src/
 
-  security:
-    needs: test
+  # --- Tests (parallel) ---
+  test:
+    needs: lint-and-cache
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        suite: [unit, integration, e2e]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ${{ matrix.suite }} tests
+        run: pytest tests/${{ matrix.suite }}/
+
+  # --- Security ---
+  security-sast:
+    needs: lint-and-cache
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install bandit
+      - name: Bandit scan
+        run: bandit -r src/ -ll -f json -o bandit-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+  security-sca:
+    needs: lint-and-cache
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pip-audit
+      - name: Check dependencies
+        run: pip-audit --requirement requirements.txt --strict
+
+  security-gate:
+    needs: [security-sast, security-sca]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Gate
+        run: |
+          if [ "${{ needs.security-sast.result }}" != "success" ] || [ "${{ needs.security-sca.result }}" != "success" ]; then
+            echo "Security checks failed"
+            exit 1
+          fi
+          echo "All security checks passed"
+
+  # --- Docker build & push ---
+  build-and-push:
+    needs: [test, security-gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
         with:
-          python-version: '3.10'
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install bandit
-        run: pip install bandit
-
-      - name: Run security scan
-        run: bandit -r src/ -ll   # сканирует папку src/ с низким порогом серьёзности
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
+          cache-to: type=inline,mode=max
