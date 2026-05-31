@@ -1,0 +1,17 @@
+# .dockerignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.log
+.git
+.github/
+*.md
+bandit-report.json
+flake8-report.txt
+artifacts/monitoring/prometheus_data/
+artifacts/monitoring/grafana_data/
+artifacts/monitoring/loki_data/
