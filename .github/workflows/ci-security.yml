@@ -11,13 +11,13 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # \-\-\- Secret Detection \-\-\-
+  # 🔍 Secret Detection
   secret-detection:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for secret scanning
+          fetch-depth: 0
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
@@ -26,16 +26,15 @@ jobs:
         with:
           config-path: gitleaks.toml
           report-path: artifacts/gitleaks-report.json
-          verbose: true
 
-      - name: Upload Gitleaks report
+      - name: Upload report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gitleaks-report
           path: artifacts/gitleaks-report.json
 
-  # \-\-\- SCA with Trivy (filesystem scan) \-\-\-
+  # 🔍 SCA Scan
   sca-scan:
     runs-on: ubuntu-latest
     steps:
@@ -51,69 +50,41 @@ jobs:
           exit-code: "1"
           output: "trivy-fs-report.txt"
 
-      - name: Save Trivy FS JSON report
+      - name: Save JSON report
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "fs"
           scan-ref: "."
           format: "json"
-          severity: "CRITICAL,HIGH,MEDIUM,LOW"
           output: "artifacts/trivy-fs-report.json"
 
-      - name: Upload Trivy FS report
+      - name: Upload report
         uses: actions/upload-artifact@v4
         with:
           name: trivy-fs-report
           path: artifacts/trivy-fs-report.json
 
-  # \-\-\- Build Docker Image \-\-\-
-  build-docker:
+  # 🐳 Build + Scan Image (в одном job!)
+  build-and-scan:
     runs-on: ubuntu-latest
     needs: [secret-detection, sca-scan]
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,prefix=
-
-      - name: Build Docker image
+      - name: Build and load image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          tags: ${{ steps.meta.outputs.tags }}
+          load: true  # 🔑 Важно для локального сканирования!
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # \-\-\- Docker Image Scanning with Trivy \-\-\-
-  image-scan:
-    runs-on: ubuntu-latest
-    needs: [build-docker]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image for scanning
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          cache-from: type=gha
-
-      - name: Scan Docker image with Trivy (table)
+      - name: Scan image (table output)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
@@ -122,7 +93,7 @@ jobs:
           exit-code: "1"
           output: "trivy-image-report.txt"
 
-      - name: Scan Docker image with Trivy (JSON)
+      - name: Scan image (JSON output)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
@@ -130,20 +101,22 @@ jobs:
           severity: "CRITICAL,HIGH,MEDIUM,LOW"
           output: "artifacts/trivy-image-report.json"
 
-      - name: Upload Trivy image report
+      - name: Upload image reports
         uses: actions/upload-artifact@v4
         with:
           name: trivy-image-report
-          path: artifacts/trivy-image-report.json
+          path: |
+            trivy-image-report.txt
+            artifacts/trivy-image-report.json
 
-  # \-\-\- SBOM Generation \-\-\-
+  # 📦 SBOM Generation
   sbom-generation:
     runs-on: ubuntu-latest
-    needs: [build-docker]
+    needs: [build-and-scan]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate SBOM with Syft
+      - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
           path: "."
@@ -155,32 +128,3 @@ jobs:
         with:
           name: sbom
           path: artifacts/sbom.json
-
-  # \-\-\- Security Gate \-\-\-
-  security-gate:
-    runs-on: ubuntu-latest
-    needs: [secret-detection, sca-scan, image-scan]
-    if: always()
-    steps:
-      - name: Check security results
-        run: |
-          SECRET_RESULT="${{ needs.secret-detection.result }}"
-          SCA_RESULT="${{ needs.sca-scan.result }}"
-          IMAGE_RESULT="${{ needs.image-scan.result }}"
-          
-          if [ "$SECRET_RESULT" != "success" ]; then
-            echo "❌ Secret detection failed"
-            exit 1
-          fi
-          
-          if [ "$SCA_RESULT" != "success" ]; then
-            echo "❌ SCA scan failed"
-            exit 1
-          fi
-          
-          if [ "$IMAGE_RESULT" != "success" ]; then
-            echo "❌ Image scan failed"
-            exit 1
-          fi
-          
-          echo "✅ All security checks passed"
